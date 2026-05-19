@@ -1309,7 +1309,7 @@ async function downloadHWPX() {
           if (rowTs[0]) { rowTs[0].textContent = budget.category || '일반수용비'; removeLineSeg(rowTs[0]); }
           if (rowTs[1]) { rowTs[1].textContent = ' '; removeLineSeg(rowTs[1]); }
           if (rowTs[2]) {
-            const itemPrefix = budget.item ? '[' + budget.item + '] ' : '';
+            const itemPrefix = budget.item ? budget.item + ' = ' : '';
             rowTs[2].textContent = itemPrefix + (budget.calc || '');
             removeLineSeg(rowTs[2]);
           }
@@ -1371,19 +1371,46 @@ async function downloadHWPX() {
   if (!newXml.startsWith('<?xml')) {
     newXml = '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\n' + newXml;
   }
-  zip.file('Contents/section0.xml', newXml);
 
-  // mimetype 파일은 반드시 STORED(비압축)로 저장해야 한컴이 인식
-  // JSZip은 파일별 압축 옵션을 지원하지 않으므로, ZIP을 다시 직접 만들어야 함
-  // 우선 JSZip으로 압축한 후 mimetype을 STORED로 재패키징
-  const mimetypeContent = await zip.file('mimetype').async('string');
+  // 모든 파일을 읽어서 새 ZIP을 처음부터 만든다
+  // (mimetype을 반드시 첫번째 + STORED 상태로 만들기 위해)
+  const fileEntries = [];
+  const fileNames = Object.keys(zip.files);
 
-  // JSZip에서 mimetype을 제거하고 다시 추가하면서 압축 옵션 변경
-  zip.remove('mimetype');
-  zip.file('mimetype', mimetypeContent, { compression: 'STORE' });
-  const blob = await zip.generateAsync({
-    type: 'blob', mimeType: 'application/hwp+zip',
-    compression: 'DEFLATE', compressionOptions: { level: 6 }
+  // mimetype부터 먼저
+  if (zip.file('mimetype')) {
+    const content = await zip.file('mimetype').async('uint8array');
+    fileEntries.push({ name: 'mimetype', content, compression: 'STORE' });
+  }
+
+  // 나머지 파일들
+  for (const name of fileNames) {
+    if (name === 'mimetype') continue;
+    const entry = zip.file(name);
+    if (!entry) continue;  // 디렉토리 항목은 zip.file()로 null
+    if (entry.dir) continue;  // 명시적 디렉토리도 제외
+
+    let content;
+    if (name === 'Contents/section0.xml') {
+      content = newXml;  // 수정된 XML
+    } else {
+      content = await entry.async('uint8array');
+    }
+    fileEntries.push({ name, content, compression: 'DEFLATE' });
+  }
+
+  // 새 ZIP 생성
+  const newZip = new JSZip();
+  for (const entry of fileEntries) {
+    newZip.file(entry.name, entry.content, {
+      compression: entry.compression,
+      compressionOptions: entry.compression === 'DEFLATE' ? { level: 6 } : undefined
+    });
+  }
+  const blob = await newZip.generateAsync({
+    type: 'blob',
+    mimeType: 'application/hwp+zip'
+    // 압축은 파일별로 이미 설정됨 (mimetype은 STORE, 나머지는 DEFLATE)
   });
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
